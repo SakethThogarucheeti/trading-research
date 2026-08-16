@@ -1,0 +1,65 @@
+[project]
+name = "trading-research"
+version = "0.1.0"
+description = "CLI for stock universe selection, feature computation, and strategy backtesting/walk-forward/Monte Carlo research — a thin, deterministic consumer of trading-platform and the strategy/risk SDKs, not a home for strategy or risk-filter content itself"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "pydantic>=2.0",
+    "polars>=1.38.1",
+    "sqlalchemy[asyncio]>=2.0",
+    "asyncpg>=0.29",
+    "anyio>=4.12.1",
+    "plotly>=5.20",
+    # Shared domain types (event models, enums, Clock)
+    "trading-types",
+    # Indicator library — Indicator.registered() drives batch feature computation
+    "quantindicators",
+    # Strategy-authoring toolkit — create_strategy()/registered_strategies() for CLI resolution
+    "trading-strategy-sdk",
+    # Risk-calculation toolkit — create_gate()/registered_gates() for CLI resolution
+    "trading-risk-sdk",
+    # Trading engine — BacktestSession's execution wiring (SignalGenerator, RiskFilter,
+    # OrderExecutor) imports trading-platform internals directly, not just its SDKs.
+    # trading-platform's Python API is treated as trading-research's real contract here,
+    # pinned the same way as everything else.
+    "trading-platform",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "anyio[trio]>=4.0",
+    "testcontainers[postgres]>=4.0",
+]
+
+[project.scripts]
+research = "research.cli:main"
+
+[tool.uv]
+package = true
+
+[tool.uv.sources]
+trading-types = { git = "https://github.com/SakethThogarucheeti/trading-types.git", tag = "v0.1.0" }
+quantindicators = { git = "https://github.com/SakethThogarucheeti/quantindicators.git", tag = "v0.1.0" }
+trading-strategy-sdk = { git = "https://github.com/SakethThogarucheeti/trading-strategy-sdk.git", tag = "v0.1.1" }
+trading-risk-sdk = { git = "https://github.com/SakethThogarucheeti/trading-risk-sdk.git", tag = "v0.1.0" }
+trading-platform = { git = "https://github.com/SakethThogarucheeti/trading-platform.git", tag = "v0.1.0" }
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tst/unit"]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+fix = true
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
