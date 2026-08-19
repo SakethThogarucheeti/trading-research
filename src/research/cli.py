@@ -120,8 +120,14 @@ async def _run_backtest(args: argparse.Namespace) -> str:
         session_id=args.session_id,
     )
     db_engine = _make_db_engine(args.db_url, args.db_no_ssl)
+    connect_args = {"ssl": False} if args.db_no_ssl else {}
     try:
-        session = BacktestSession(config=config, db_engine=db_engine, results_dir=args.results_dir)
+        session = BacktestSession(
+            config=config,
+            db_engine=db_engine,
+            results_dir=args.results_dir,
+            connect_args=connect_args,
+        )
         report = await session.run()
         return report.session_id
     finally:
