@@ -10,9 +10,10 @@ from research.report_base import SessionReport
 from research.session import SessionConfig
 
 if TYPE_CHECKING:
+    from trading.config.settings import AlgoSettings
+
     from research.backtesting.data_loader import DataLoader
     from research.backtesting.report import BacktestReport
-    from trading.config.settings import AlgoSettings
 
 
 # ---------------------------------------------------------------------------
@@ -60,8 +61,8 @@ class WalkForwardReport(SessionReport):
     # SessionReport fields
     session_id: str = ""
     session_type: str = "walk_forward"
-    started_at: datetime = field(default_factory=field(default_factory=lambda: datetime.now(UTC)))
-    finished_at: datetime = field(default_factory=field(default_factory=lambda: datetime.now(UTC)))
+    started_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    finished_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -80,14 +81,10 @@ class WalkForwardReport(SessionReport):
             ],
         }
 
-    def to_html(self) -> str:
+    def _build_equity_curve_fig(self):
+        """Combined equity curve across all windows."""
         import plotly.graph_objects as go
-        from plotly.io import to_html as plotly_to_html
 
-        figs: list[go.Figure] = []
-        window_labels = [f"W{i + 1}" for i in range(len(self.windows))]
-
-        # 1 — Combined equity curve (with train/test band shading)
         eq_fig = go.Figure()
         dates = self.combined_equity_curve["date"].to_list()
         equities = self.combined_equity_curve["equity"].to_list()
@@ -106,9 +103,12 @@ class WalkForwardReport(SessionReport):
             yaxis_title="Equity",
             template="plotly_white",
         )
-        figs.append(eq_fig)
+        return eq_fig
 
-        # 2 — Per-window Sharpe bar chart
+    def _build_sharpe_fig(self, window_labels: list[str]):
+        """Per-window Sharpe ratio bar chart."""
+        import plotly.graph_objects as go
+
         sharpe_vals = [w.sharpe_ratio for w in self.windows]
         sharpe_fig = go.Figure()
         sharpe_fig.add_trace(
@@ -125,9 +125,12 @@ class WalkForwardReport(SessionReport):
             yaxis_title="Sharpe",
             template="plotly_white",
         )
-        figs.append(sharpe_fig)
+        return sharpe_fig
 
-        # 3 — Per-window max drawdown bar chart
+    def _build_drawdown_fig(self, window_labels: list[str]):
+        """Per-window max drawdown bar chart."""
+        import plotly.graph_objects as go
+
         mdd_vals = [w.max_drawdown for w in self.windows]
         mdd_fig = go.Figure()
         mdd_fig.add_trace(
@@ -145,9 +148,12 @@ class WalkForwardReport(SessionReport):
             yaxis=dict(tickformat=".1%"),
             template="plotly_white",
         )
-        figs.append(mdd_fig)
+        return mdd_fig
 
-        # 4 — Aggregate metrics table
+    def _build_metrics_table_fig(self):
+        """Aggregate metrics table."""
+        import plotly.graph_objects as go
+
         metrics_fig = go.Figure(
             data=[
                 go.Table(
@@ -174,7 +180,18 @@ class WalkForwardReport(SessionReport):
             ]
         )
         metrics_fig.update_layout(title="Aggregate Metrics", template="plotly_white")
-        figs.append(metrics_fig)
+        return metrics_fig
+
+    def to_html(self) -> str:
+        from plotly.io import to_html as plotly_to_html
+
+        window_labels = [f"W{i + 1}" for i in range(len(self.windows))]
+        figs = [
+            self._build_equity_curve_fig(),
+            self._build_sharpe_fig(window_labels),
+            self._build_drawdown_fig(window_labels),
+            self._build_metrics_table_fig(),
+        ]
 
         parts = [
             plotly_to_html(fig, include_plotlyjs=(i == 0), full_html=False)
