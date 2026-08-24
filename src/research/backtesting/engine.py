@@ -346,15 +346,23 @@ class BacktestSession(TestingSession):
 
         finally:
             # SignalGenerator schedules chart/state/signal writes via fire()
-            # (fire-and-forget asyncio tasks) rather than awaiting them
-            # inline, since live trading's Runtime stays up indefinitely and
-            # those tasks always get time to finish. BacktestSession's
-            # asyncio.run()-per-invocation lifecycle is short-lived, so any
-            # still-pending fire()'d task at this point would otherwise be
-            # torn down mid-write when the event loop closes, surfacing as
-            # unhandled-exception noise (or, if the loop wins the race
-            # first, a genuine lost write). Wait for them here instead.
-            pending = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+            # (fire-and-forget asyncio tasks, named "trading.fire" — see
+            # app/tasks.py) rather than awaiting them inline, since live
+            # trading's Runtime stays up indefinitely and those tasks always
+            # get time to finish. BacktestSession's asyncio.run()-per-invocation
+            # lifecycle is short-lived, so any still-pending fire()'d task at
+            # this point would otherwise be torn down mid-write when the event
+            # loop closes, surfacing as unhandled-exception noise (or, if the
+            # loop wins the race first, a genuine lost write). Wait for them
+            # here instead — filtered strictly by name, not "every task on the
+            # loop": long-lived tasks (e.g. cashews' cache-expiry sweeper,
+            # lazily started by setup_cache()) also live on the loop and never
+            # finish on their own, so gathering one of those hangs forever.
+            pending = [
+                t
+                for t in asyncio.all_tasks()
+                if t is not asyncio.current_task() and t.get_name() == "trading.fire"
+            ]
             if pending:
                 await asyncio.gather(*pending, return_exceptions=True)
 
