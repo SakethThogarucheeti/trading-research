@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 
 from research.backtesting.data_loader import DataLoader
 from research.backtesting.metrics import (
@@ -86,6 +86,236 @@ class BacktestSession(TestingSession):
         # (e.g. ssl=False for a flaky local container) must be passed here too.
         self._connect_args = connect_args or {}
 
+    async def _setup_infrastructure(
+        self,
+    ) -> tuple[AsyncEngine, async_sessionmaker[AsyncSession]]:
+        """Schema-isolated engine + session factory for parallel safety."""
+        schema_engine = await _make_schema_engine(
+            self._db_engine, self._db_schema, self._connect_args
+        )
+        sf = build_session_factory(schema_engine)
+        await init_db(schema_engine)
+        logger.debug("BacktestSession[%s]: DB schema ready", self._db_schema)
+        return schema_engine, sf
+
+    def _build_broker(self, config: BacktestConfig) -> tuple[PriceStore, SlippageFillSimulator]:
+        """Simulator broker + price store."""
+        price_store = PriceStore()
+        simulator = SlippageFillSimulator(
+            price_store=price_store,
+            slippage_pct=config.slippage_pct,
+            partial_fill_prob=config.partial_fill_prob,
+            latency_secs=config.latency_secs,
+        )
+        return price_store, simulator
+
+    def _load_market_data(self, config: BacktestConfig, price_store: PriceStore):
+        """Load OHLCV data (raises FileNotFoundError / ValueError early)."""
+        algo = config.algo
+        intervals = algo.candle_intervals or ["1min", "5min", "15min"]
+        symbol_configs = [
+            SymbolConfig(
+                symbol=s,
+                instrument_token=0,
+                instrument_type=InstrumentType.EQUITY,
+            )
+            for s in algo.instruments
+        ]
+        data = _load_data(config.loader, algo.instruments, intervals, config.start, config.end)
+
+        # Pre-populate price store with first known prices
+        for (sym, _), df in data.items():
+            if len(df) > 0:
+                price_store.update(sym, float(df["close"][0]))
+
+        return algo, intervals, symbol_configs, data
+
+    async def _build_pipeline(
+        self,
+        config: BacktestConfig,
+        algo,
+        intervals: list[str],
+        sf: async_sessionmaker[AsyncSession],
+        sim_clock: SimulatedClock,
+        simulator: SlippageFillSimulator,
+        tracker: EquityTracker,
+    ) -> tuple[SignalGenerator, RiskFilter, OrderExecutor]:
+        """Build the direct pipeline: AlgoRegistry → RiskRegistry → ExecRegistry."""
+        algo_instances: dict[str, AlgoInstance] = {
+            s: AlgoInstance(
+                strategy=make_strategy(
+                    algo.strategy_id, config.strategy_params or None, clock=sim_clock
+                ),
+                instrument_type=InstrumentType.EQUITY,
+            )
+            for s in algo.instruments
+        }
+
+        polars_store = PolarsStore()
+
+        setup_cache(None)
+        factory = CacherFactory(ValueCache(), sim_clock)
+
+        audit = AuditStore(sf)
+        trading = TradingStore(sf)
+        position = PositionStore(sf)
+        accountant = PositionAccountant(position, factory)
+        fill_handler = FillHandler(trading, accountant)
+
+        # SignalGenerator upserts algo_state keyed by algo.name via a
+        # foreign key to algo_configs — that row must exist first (the
+        # live DI container does this via AlgoPipelineFactory.seed_state()
+        # before ever constructing a SignalGenerator; the backtest engine
+        # must do the same or the first candle's state write fails).
+        config_store = ConfigStore(sf)
+        any_strategy = next(iter(algo_instances.values())).strategy
+        await config_store.seed_algo_config(
+            name=algo.name,
+            strategy_id=algo.strategy_id,
+            warmup_candles=200,
+            candle_intervals=intervals,
+            equity=config.initial_equity,
+            params=any_strategy.get_params(),
+        )
+
+        algo_reg = SignalGenerator(
+            config=AlgoRunConfig(
+                instrument_strategy_map={s: algo.strategy_id for s in algo.instruments},
+                equity=config.initial_equity,
+                warmup_candles=200,
+                algo_name=algo.name,
+                instrument_types={s: InstrumentType.EQUITY.value for s in algo.instruments},
+            ),
+            chart=ChartStore(sf),
+            config_store=config_store,
+            audit=audit,
+            factory=factory,
+            algos=algo_instances,
+            store=polars_store,
+            clock=sim_clock,
+        )
+        algo_reg.setup()
+
+        risk_reg = RiskFilter(
+            config=RiskConfig(
+                equity=config.initial_equity,
+                intraday_cutoff_hour=23,
+                intraday_cutoff_minute=59,
+            ),
+            gates=[
+                TimeCutoffGate(),
+                CircuitBreakerGate(),
+                DailyLossGate(enabled=False),
+                DuplicatePositionGate(),
+            ],
+            trading=trading,
+            audit=audit,
+            position=position,
+            factory=factory,
+            clock=sim_clock,
+            equity_provider=lambda: tracker.current_equity,
+            circuit=CircuitBreaker(),
+        )
+
+        exec_reg = OrderExecutor(
+            config=ExecConfig(exec_id="paper"),
+            broker=simulator,
+            session_factory=sf,
+            trading=trading,
+            fill_handler=fill_handler,
+            clock=sim_clock,
+        )
+
+        return algo_reg, risk_reg, exec_reg
+
+    async def _run_replay(
+        self,
+        symbol_configs: list[SymbolConfig],
+        intervals: list[str],
+        config: BacktestConfig,
+        data,
+        price_store: PriceStore,
+        on_candle,
+        sim_clock: SimulatedClock,
+    ) -> None:
+        """Drive CandlePlayer through the historical data; runtime stops when replay is done."""
+        bars_done: list[int] = [0]
+
+        async def _on_progress(n: int, bar_ts: datetime) -> None:
+            bars_done[0] = n
+            sim_clock.advance(bar_ts)
+
+        from research.simulators.candle_player import CandlePlayer
+        from trading.core.lifecycle.runtime import Runtime
+
+        runtime = Runtime([])  # no components — pipeline is driven inline
+
+        candle_player = CandlePlayer(
+            symbols=symbol_configs,
+            intervals=intervals,
+            start=config.start,
+            end=config.end,
+            runtime=runtime,
+            on_candle=on_candle,
+            on_progress=_on_progress,
+            data=data,
+            replay_delay_secs=config.replay_delay_secs,
+            on_bar_price=price_store.update,
+        )
+
+        import anyio
+
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(candle_player.start)
+            tg.start_soon(runtime.start)
+
+    def _build_report(
+        self,
+        config: BacktestConfig,
+        tracker: EquityTracker,
+        algo,
+        price_store: PriceStore,
+        session_id: str,
+        started_at: datetime,
+    ) -> BacktestReport:
+        """Close open positions and compute final metrics."""
+        last_prices: dict[str, float] = {s: price_store.get(s) or 0.0 for s in algo.instruments}
+        tracker.close_open_positions(last_prices)
+
+        eq_curve = tracker.equity_curve
+        trades = tracker.trades
+
+        report = BacktestReport(
+            config=config,
+            equity_curve=eq_curve,
+            trades=trades,
+            sharpe_ratio=sharpe_ratio(eq_curve),
+            max_drawdown=max_drawdown(eq_curve),
+            max_drawdown_duration=max_drawdown_duration(eq_curve),
+            win_rate=win_rate(trades),
+            profit_factor=profit_factor(trades),
+            cagr=cagr(eq_curve, config.initial_equity, start=config.start, end=config.end),
+            calmar_ratio=calmar_ratio(eq_curve, start=config.start, end=config.end),
+            total_trades=len(trades),
+            final_equity=tracker.current_equity,
+            session_id=session_id,
+            session_type="backtest",
+            started_at=started_at,
+            finished_at=self._now(),
+        )
+        logger.info(
+            "BacktestSession[%s]: complete  trades=%d  sharpe=%.3f  pnl=%+.0f"
+            "  win_rate=%.0f%%  max_dd=%.1f%%  equity=%.0f",
+            self._db_schema,
+            report.total_trades,
+            report.sharpe_ratio,
+            report.final_equity - config.initial_equity,
+            report.win_rate * 100,
+            report.max_drawdown * 100,
+            report.final_equity,
+        )
+        return report
+
     async def run(self) -> BacktestReport:
         config = self._config
         session_id = config.session_id or str(uuid.uuid4())
@@ -106,46 +336,11 @@ class BacktestSession(TestingSession):
         tracker = EquityTracker(config.initial_equity)
 
         try:
-            # ------------------------------------------------------------------
-            # 1. Infrastructure — schema-isolated engine for parallel safety
-            # ------------------------------------------------------------------
-            schema_engine = await _make_schema_engine(
-                self._db_engine, self._db_schema, self._connect_args
-            )
-            sf = build_session_factory(schema_engine)
-            await init_db(schema_engine)
-            logger.debug("BacktestSession[%s]: DB schema ready", self._db_schema)
+            schema_engine, sf = await self._setup_infrastructure()
 
-            # ------------------------------------------------------------------
-            # 2. Simulator broker + price store
-            # ------------------------------------------------------------------
-            price_store = PriceStore()
-            simulator = SlippageFillSimulator(
-                price_store=price_store,
-                slippage_pct=config.slippage_pct,
-                partial_fill_prob=config.partial_fill_prob,
-                latency_secs=config.latency_secs,
-            )
+            price_store, simulator = self._build_broker(config)
 
-            # ------------------------------------------------------------------
-            # 3. Load OHLCV data (raises FileNotFoundError / ValueError early)
-            # ------------------------------------------------------------------
-            algo = config.algo
-            intervals = algo.candle_intervals or ["1min", "5min", "15min"]
-            symbol_configs = [
-                SymbolConfig(
-                    symbol=s,
-                    instrument_token=0,
-                    instrument_type=InstrumentType.EQUITY,
-                )
-                for s in algo.instruments
-            ]
-            data = _load_data(config.loader, algo.instruments, intervals, config.start, config.end)
-
-            # Pre-populate price store with first known prices
-            for (sym, _), df in data.items():
-                if len(df) > 0:
-                    price_store.update(sym, float(df["close"][0]))
+            algo, intervals, symbol_configs, data = self._load_market_data(config, price_store)
 
             # ------------------------------------------------------------------
             # 4. Simulated clock
@@ -154,92 +349,8 @@ class BacktestSession(TestingSession):
             # ------------------------------------------------------------------
             sim_clock = SimulatedClock()
 
-            # ------------------------------------------------------------------
-            # 5. Build the direct pipeline: AlgoRegistry → RiskRegistry → ExecRegistry
-            # ------------------------------------------------------------------
-            algo_instances: dict[str, AlgoInstance] = {
-                s: AlgoInstance(
-                    strategy=make_strategy(
-                        algo.strategy_id, config.strategy_params or None, clock=sim_clock
-                    ),
-                    instrument_type=InstrumentType.EQUITY,
-                )
-                for s in algo.instruments
-            }
-
-            polars_store = PolarsStore()
-
-            setup_cache(None)
-            factory = CacherFactory(ValueCache(), sim_clock)
-
-            audit = AuditStore(sf)
-            trading = TradingStore(sf)
-            position = PositionStore(sf)
-            accountant = PositionAccountant(position, factory)
-            fill_handler = FillHandler(trading, accountant)
-
-            # SignalGenerator upserts algo_state keyed by algo.name via a
-            # foreign key to algo_configs — that row must exist first (the
-            # live DI container does this via AlgoPipelineFactory.seed_state()
-            # before ever constructing a SignalGenerator; the backtest engine
-            # must do the same or the first candle's state write fails).
-            config_store = ConfigStore(sf)
-            any_strategy = next(iter(algo_instances.values())).strategy
-            await config_store.seed_algo_config(
-                name=algo.name,
-                strategy_id=algo.strategy_id,
-                warmup_candles=200,
-                candle_intervals=intervals,
-                equity=config.initial_equity,
-                params=any_strategy.get_params(),
-            )
-
-            algo_reg = SignalGenerator(
-                config=AlgoRunConfig(
-                    instrument_strategy_map={s: algo.strategy_id for s in algo.instruments},
-                    equity=config.initial_equity,
-                    warmup_candles=200,
-                    algo_name=algo.name,
-                    instrument_types={s: InstrumentType.EQUITY.value for s in algo.instruments},
-                ),
-                chart=ChartStore(sf),
-                config_store=config_store,
-                audit=audit,
-                factory=factory,
-                algos=algo_instances,
-                store=polars_store,
-                clock=sim_clock,
-            )
-            algo_reg.setup()
-
-            risk_reg = RiskFilter(
-                config=RiskConfig(
-                    equity=config.initial_equity,
-                    intraday_cutoff_hour=23,
-                    intraday_cutoff_minute=59,
-                ),
-                gates=[
-                    TimeCutoffGate(),
-                    CircuitBreakerGate(),
-                    DailyLossGate(enabled=False),
-                    DuplicatePositionGate(),
-                ],
-                trading=trading,
-                audit=audit,
-                position=position,
-                factory=factory,
-                clock=sim_clock,
-                equity_provider=lambda: tracker.current_equity,
-                circuit=CircuitBreaker(),
-            )
-
-            exec_reg = OrderExecutor(
-                config=ExecConfig(exec_id="paper"),
-                broker=simulator,
-                session_factory=sf,
-                trading=trading,
-                fill_handler=fill_handler,
-                clock=sim_clock,
+            algo_reg, risk_reg, exec_reg = await self._build_pipeline(
+                config, algo, intervals, sf, sim_clock, simulator, tracker
             )
 
             # ------------------------------------------------------------------
@@ -267,81 +378,12 @@ class BacktestSession(TestingSession):
                 current_prices = {s: price_store.get(s) or candle.close for s in algo.instruments}
                 tracker.mark_snapshot(candle.timestamp, current_prices)
 
-            # ------------------------------------------------------------------
-            # 7. CandlePlayer
-            # ------------------------------------------------------------------
-            bars_done: list[int] = [0]
-
-            async def _on_progress(n: int, bar_ts: datetime) -> None:
-                bars_done[0] = n
-                sim_clock.advance(bar_ts)
-
-            from research.simulators.candle_player import CandlePlayer
-            from trading.core.lifecycle.runtime import Runtime
-
-            runtime = Runtime([])  # no components — pipeline is driven inline
-
-            candle_player = CandlePlayer(
-                symbols=symbol_configs,
-                intervals=intervals,
-                start=config.start,
-                end=config.end,
-                runtime=runtime,
-                on_candle=_on_candle,
-                on_progress=_on_progress,
-                data=data,
-                replay_delay_secs=config.replay_delay_secs,
-                on_bar_price=price_store.update,
+            await self._run_replay(
+                symbol_configs, intervals, config, data, price_store, _on_candle, sim_clock
             )
 
-            # ------------------------------------------------------------------
-            # 8. Run — CandlePlayer calls runtime.stop() when replay is done
-            # ------------------------------------------------------------------
-            import anyio
-
-            async with anyio.create_task_group() as tg:
-                tg.start_soon(candle_player.start)
-                tg.start_soon(runtime.start)
-
-            # ------------------------------------------------------------------
-            # 9. Close open positions + compute metrics
-            # ------------------------------------------------------------------
-            last_prices: dict[str, float] = {s: price_store.get(s) or 0.0 for s in algo.instruments}
-            tracker.close_open_positions(last_prices)
-
-            eq_curve = tracker.equity_curve
-            trades = tracker.trades
-
-            report = BacktestReport(
-                config=config,
-                equity_curve=eq_curve,
-                trades=trades,
-                sharpe_ratio=sharpe_ratio(eq_curve),
-                max_drawdown=max_drawdown(eq_curve),
-                max_drawdown_duration=max_drawdown_duration(eq_curve),
-                win_rate=win_rate(trades),
-                profit_factor=profit_factor(trades),
-                cagr=cagr(eq_curve, config.initial_equity, start=config.start, end=config.end),
-                calmar_ratio=calmar_ratio(eq_curve, start=config.start, end=config.end),
-                total_trades=len(trades),
-                final_equity=tracker.current_equity,
-                session_id=session_id,
-                session_type="backtest",
-                started_at=started_at,
-                finished_at=self._now(),
-            )
+            report = self._build_report(config, tracker, algo, price_store, session_id, started_at)
             partial_report = report
-            logger.info(
-                "BacktestSession[%s]: complete  trades=%d  sharpe=%.3f  pnl=%+.0f"
-                "  win_rate=%.0f%%  max_dd=%.1f%%  equity=%.0f",
-                self._db_schema,
-                report.total_trades,
-                report.sharpe_ratio,
-                report.final_equity - config.initial_equity,
-                report.win_rate * 100,
-                report.max_drawdown * 100,
-                report.final_equity,
-            )
             return report
 
         finally:
