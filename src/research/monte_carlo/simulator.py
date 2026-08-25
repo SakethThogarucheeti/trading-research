@@ -44,6 +44,69 @@ class MonteCarloSimulator(TestingSession):
         self._config = config
         self._trades = trades
 
+    def _run_trials(
+        self, pnls: list[float], rng: random.Random
+    ) -> tuple[list[float], list[float]]:
+        """Run all n_trials simulations, returning (trial_returns, trial_drawdowns)."""
+        config = self._config
+        initial = config.initial_equity
+        trial_returns: list[float] = []
+        trial_drawdowns: list[float] = []
+
+        for _trial_idx in range(config.n_trials):
+            trial_pnls = _sample(pnls, config.method, rng, config.slippage_sigma)
+            equity = initial
+            peak = initial
+            max_dd = 0.0
+
+            for pnl in trial_pnls:
+                equity += pnl
+                if equity > peak:
+                    peak = equity
+                dd = (peak - equity) / peak if peak > 0 else 0.0
+                if dd > max_dd:
+                    max_dd = dd
+
+            trial_returns.append((equity - initial) / initial)
+            trial_drawdowns.append(max_dd)
+
+        return trial_returns, trial_drawdowns
+
+    def _build_report(
+        self,
+        trial_returns: list[float],
+        trial_drawdowns: list[float],
+        session_id: str,
+        started_at,
+    ) -> MonteCarloReport:
+        """Aggregate ruin probability and return/drawdown percentiles into a report."""
+        config = self._config
+        ret_series = pl.Series("return", trial_returns)
+        dd_series = pl.Series("max_drawdown", trial_drawdowns)
+
+        ruin_count = sum(1 for r in trial_returns if r < -0.5)
+
+        sorted_rets = sorted(trial_returns)
+        n = len(sorted_rets)
+        p5 = sorted_rets[max(0, int(n * 0.05))]
+        p95 = sorted_rets[min(n - 1, int(n * 0.95))]
+        median_dd = sorted(trial_drawdowns)[n // 2]
+
+        return MonteCarloReport(
+            config=config,
+            return_distribution=ret_series,
+            drawdown_distribution=dd_series,
+            probability_of_ruin=ruin_count / config.n_trials,
+            percentile_5_return=p5,
+            percentile_95_return=p95,
+            median_drawdown=median_dd,
+            n_trials=config.n_trials,
+            session_id=session_id,
+            session_type="monte_carlo",
+            started_at=started_at,
+            finished_at=self._now(),
+        )
+
     async def run(self) -> MonteCarloReport:
         config = self._config
         session_id = config.session_id or str(uuid.uuid4())
@@ -55,53 +118,8 @@ class MonteCarloSimulator(TestingSession):
         try:
             rng = random.Random(config.seed)
             pnls = [t.pnl for t in self._trades]
-            initial = config.initial_equity
-
-            trial_returns: list[float] = []
-            trial_drawdowns: list[float] = []
-
-            for _trial_idx in range(config.n_trials):
-                trial_pnls = _sample(pnls, config.method, rng, config.slippage_sigma)
-                equity = initial
-                peak = initial
-                max_dd = 0.0
-
-                for pnl in trial_pnls:
-                    equity += pnl
-                    if equity > peak:
-                        peak = equity
-                    dd = (peak - equity) / peak if peak > 0 else 0.0
-                    if dd > max_dd:
-                        max_dd = dd
-
-                trial_returns.append((equity - initial) / initial)
-                trial_drawdowns.append(max_dd)
-
-            ret_series = pl.Series("return", trial_returns)
-            dd_series = pl.Series("max_drawdown", trial_drawdowns)
-
-            ruin_count = sum(1 for r in trial_returns if r < -0.5)
-
-            sorted_rets = sorted(trial_returns)
-            n = len(sorted_rets)
-            p5 = sorted_rets[max(0, int(n * 0.05))]
-            p95 = sorted_rets[min(n - 1, int(n * 0.95))]
-            median_dd = sorted(trial_drawdowns)[n // 2]
-
-            report = MonteCarloReport(
-                config=config,
-                return_distribution=ret_series,
-                drawdown_distribution=dd_series,
-                probability_of_ruin=ruin_count / config.n_trials,
-                percentile_5_return=p5,
-                percentile_95_return=p95,
-                median_drawdown=median_dd,
-                n_trials=config.n_trials,
-                session_id=session_id,
-                session_type="monte_carlo",
-                started_at=started_at,
-                finished_at=self._now(),
-            )
+            trial_returns, trial_drawdowns = self._run_trials(pnls, rng)
+            report = self._build_report(trial_returns, trial_drawdowns, session_id, started_at)
             partial = report
             return report
 
