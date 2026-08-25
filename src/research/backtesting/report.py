@@ -11,8 +11,9 @@ from research.report_base import SessionReport
 from research.session import SessionConfig
 
 if TYPE_CHECKING:
-    from research.backtesting.data_loader import DataLoader
     from trading.config.settings import AlgoSettings
+
+    from research.backtesting.data_loader import DataLoader
 
 
 # ---------------------------------------------------------------------------
@@ -119,18 +120,18 @@ class BacktestReport(SessionReport):
             ],
         }
 
-    def to_html(self) -> str:
-        """Self-contained HTML with embedded Plotly charts."""
-        import plotly.graph_objects as go
-        from plotly.io import to_html as plotly_to_html
-
-        figs: list[go.Figure] = []
-
-        # 1 — Equity curve
-        eq_fig = go.Figure()
+    def _equity_series(self) -> tuple[list, list, list]:
+        """Dates, equity values, and the running max used by both equity-curve charts."""
         dates = self.equity_curve["date"].to_list()
         equities = self.equity_curve["equity"].to_list()
+        running_max = self.equity_curve["equity"].cum_max().to_list()
+        return dates, equities, running_max
 
+    def _build_equity_curve_fig(self, dates: list, equities: list, running_max: list):
+        """Equity curve line chart, with drawdown periods shaded."""
+        import plotly.graph_objects as go
+
+        eq_fig = go.Figure()
         eq_fig.add_trace(
             go.Scatter(
                 x=dates,
@@ -141,7 +142,6 @@ class BacktestReport(SessionReport):
             )
         )
         # Shade drawdown periods
-        running_max = self.equity_curve["equity"].cum_max().to_list()
         in_dd = False
         dd_start = None
         for i, (eq, rm) in enumerate(zip(equities, running_max, strict=False)):
@@ -169,9 +169,12 @@ class BacktestReport(SessionReport):
             yaxis_title="Equity",
             template="plotly_white",
         )
-        figs.append(eq_fig)
+        return eq_fig
 
-        # 2 — Drawdown area chart
+    def _build_drawdown_fig(self, dates: list, equities: list, running_max: list):
+        """Drawdown area chart."""
+        import plotly.graph_objects as go
+
         dd_values = [
             -(rm - eq) / rm if rm > 0 else 0.0
             for eq, rm in zip(equities, running_max, strict=False)
@@ -195,32 +198,40 @@ class BacktestReport(SessionReport):
             yaxis=dict(tickformat=".1%"),
             template="plotly_white",
         )
-        figs.append(dd_fig)
+        return dd_fig
 
-        # 3 — Trade P&L bar chart
-        if self.trades:
-            trade_labels = [f"{t.symbol} {t.side}" for t in self.trades]
-            trade_pnls = [t.pnl for t in self.trades]
-            colors = ["#4CAF50" if p > 0 else "#F44336" for p in trade_pnls]
-            pnl_fig = go.Figure()
-            pnl_fig.add_trace(
-                go.Bar(
-                    x=list(range(len(trade_pnls))),
-                    y=trade_pnls,
-                    marker_color=colors,
-                    text=trade_labels,
-                    name="Trade P&L",
-                )
-            )
-            pnl_fig.update_layout(
-                title="Trade P&L",
-                xaxis_title="Trade #",
-                yaxis_title="P&L",
-                template="plotly_white",
-            )
-            figs.append(pnl_fig)
+    def _build_trade_pnl_fig(self):
+        """Per-trade P&L bar chart, or None if there are no trades."""
+        if not self.trades:
+            return None
 
-        # 4 — Metrics summary table
+        import plotly.graph_objects as go
+
+        trade_labels = [f"{t.symbol} {t.side}" for t in self.trades]
+        trade_pnls = [t.pnl for t in self.trades]
+        colors = ["#4CAF50" if p > 0 else "#F44336" for p in trade_pnls]
+        pnl_fig = go.Figure()
+        pnl_fig.add_trace(
+            go.Bar(
+                x=list(range(len(trade_pnls))),
+                y=trade_pnls,
+                marker_color=colors,
+                text=trade_labels,
+                name="Trade P&L",
+            )
+        )
+        pnl_fig.update_layout(
+            title="Trade P&L",
+            xaxis_title="Trade #",
+            yaxis_title="P&L",
+            template="plotly_white",
+        )
+        return pnl_fig
+
+    def _build_metrics_table_fig(self):
+        """Summary metrics table."""
+        import plotly.graph_objects as go
+
         metrics_fig = go.Figure(
             data=[
                 go.Table(
@@ -256,7 +267,22 @@ class BacktestReport(SessionReport):
             ]
         )
         metrics_fig.update_layout(title="Performance Metrics", template="plotly_white")
-        figs.append(metrics_fig)
+        return metrics_fig
+
+    def to_html(self) -> str:
+        """Self-contained HTML with embedded Plotly charts."""
+        from plotly.io import to_html as plotly_to_html
+
+        dates, equities, running_max = self._equity_series()
+
+        figs = [
+            self._build_equity_curve_fig(dates, equities, running_max),
+            self._build_drawdown_fig(dates, equities, running_max),
+        ]
+        pnl_fig = self._build_trade_pnl_fig()
+        if pnl_fig is not None:
+            figs.append(pnl_fig)
+        figs.append(self._build_metrics_table_fig())
 
         # Combine into one HTML
         parts = [
