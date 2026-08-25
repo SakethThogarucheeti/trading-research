@@ -90,7 +90,9 @@ def max_drawdown(equity_curve: pl.DataFrame) -> float:
     eq = daily["equity"]
     running_max = eq.cum_max()
     # Guard against division by zero if equity ever hits 0 or goes negative.
-    safe_max = running_max.map_elements(lambda v: v if v > 0 else float("nan"), return_dtype=pl.Float64)
+    safe_max = running_max.map_elements(
+        lambda v: float(v) if v > 0 else float("nan"), return_dtype=pl.Float64
+    )
     drawdowns = (safe_max - eq) / safe_max
     result = drawdowns.drop_nans().max()
     return float(result or 0.0)
