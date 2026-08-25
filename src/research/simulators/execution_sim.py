@@ -20,7 +20,7 @@ class SlippageFillSimulator(Broker):
     """
     Simulated broker for backtesting that models real-world execution imperfections.
 
-    Plugs into ``DirectExecutionEngine`` in place of ``ZerodhaBroker``. All
+    Plugs into ``OrderExecutor`` in place of ``ZerodhaBroker``. All
     market-data methods (``get_instruments``, ``get_ohlc``) return empty
     DataFrames — only ``place_order`` is meaningful during replay.
 
@@ -34,7 +34,7 @@ class SlippageFillSimulator(Broker):
     With probability ``partial_fill_prob`` a fill is split: the first fill
     covers ``floor(qty × 0.5)`` units immediately; the remainder arrives
     after ``latency_secs``. The second fill uses a second ``place_order``
-    call from the ``DirectExecutionEngine``, so idempotency is handled
+    call from the ``OrderExecutor``, so idempotency is handled
     upstream.
 
     Latency
@@ -149,7 +149,7 @@ class SlippageFillSimulator(Broker):
     ) -> None:
         """
         Update PriceStore with fill price so downstream equity tracking sees it.
-        The actual FillEvent is published by DirectExecutionEngine.handle_fill().
+        The actual FillEvent is published by OrderExecutor.handle_fill().
         """
         self._price_store.update(symbol, price)
         logger.debug(
