@@ -41,11 +41,11 @@ research = "research.cli:main"
 package = true
 
 [tool.uv.sources]
-trading-types = { git = "https://github.com/SakethThogarucheeti/trading-types.git", tag = "v0.1.0" }
-quantindicators = { git = "https://github.com/SakethThogarucheeti/quantindicators.git", tag = "v0.1.0" }
-trading-strategy-sdk = { git = "https://github.com/SakethThogarucheeti/trading-strategy-sdk.git", tag = "v0.1.1" }
-trading-risk-sdk = { git = "https://github.com/SakethThogarucheeti/trading-risk-sdk.git", tag = "v0.1.0" }
-trading-platform = { git = "https://github.com/SakethThogarucheeti/trading-platform.git", tag = "v0.1.0" }
+trading-types = { git = "https://github.com/SakethThogarucheeti/trading-types.git", tag = "v0.1.1" }
+quantindicators = { git = "https://github.com/SakethThogarucheeti/quantindicators.git", tag = "v0.1.1" }
+trading-strategy-sdk = { git = "https://github.com/SakethThogarucheeti/trading-strategy-sdk.git", tag = "v0.1.5" }
+trading-risk-sdk = { git = "https://github.com/SakethThogarucheeti/trading-risk-sdk.git", tag = "v0.1.2" }
+trading-platform = { git = "https://github.com/SakethThogarucheeti/trading-platform.git", tag = "v0.1.1" }
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

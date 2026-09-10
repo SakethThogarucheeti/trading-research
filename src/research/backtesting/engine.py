@@ -6,8 +6,34 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
+from quantindicators.polars_store import PolarsStore
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
+from trading.app.database import build_session_factory, init_db
+from trading.broker.service.paper_broker import PriceStore
+from trading.candles.service.bar_accumulator import SymbolConfig
+from trading.core.clock import SimulatedClock
+from trading.core.schemas import CandleEvent, InstrumentType
+from trading.execution.service.executor import ExecConfig, OrderExecutor
+from trading.execution.service.fill_handler import FillHandler
+from trading.execution.service.position_accountant import PositionAccountant
+from trading.execution.storage.store import PositionStore, TradingStore
+from trading.risk.service.filter import RiskConfig, RiskFilter
+from trading.storage.cache import CacherFactory, ValueCache
+from trading.strategy.service.generator import AlgoInstance, AlgoRunConfig, SignalGenerator
+from trading.strategy.storage.store import ChartStore, ConfigStore
+from trading.tick_ingest.service.ingestor import CircuitBreaker
+from trading.tick_ingest.storage.store import AuditStore
+from trading_risk_sdk.gates.circuit_breaker import CircuitBreakerGate
+from trading_risk_sdk.gates.daily_loss import DailyLossGate
+from trading_risk_sdk.gates.duplicate_position import DuplicatePositionGate
+from trading_risk_sdk.gates.time_cutoff import TimeCutoffGate
+from trading_strategy_sdk.factory import create_strategy
 
 from research.backtesting.data_loader import DataLoader
 from research.backtesting.metrics import (
@@ -24,29 +50,6 @@ from research.backtesting.report import BacktestConfig, BacktestReport
 from research.registry import session_type
 from research.session import TestingSession
 from research.simulators.execution_sim import SlippageFillSimulator
-from trading.broker.service.paper_broker import PriceStore
-from trading.core.clock import SimulatedClock
-from trading.app.database import build_session_factory, init_db
-from trading.core.schemas import CandleEvent, InstrumentType
-from trading.di.providers.strategy import make_strategy
-from quantindicators.polars_store import PolarsStore
-from trading.strategy.service.generator import AlgoInstance, AlgoRunConfig, SignalGenerator
-from trading.candles.service.bar_accumulator import SymbolConfig
-from trading.execution.service.fill_handler import FillHandler
-from trading.execution.service.executor import ExecConfig, OrderExecutor
-from trading.execution.service.position_accountant import PositionAccountant
-from trading.risk.gates.circuit_breaker import CircuitBreakerGate
-from trading.risk.gates.daily_loss import DailyLossGate
-from trading.risk.gates.duplicate_position import DuplicatePositionGate
-from trading.risk.gates.time_cutoff import TimeCutoffGate
-from trading.risk.service.filter import RiskConfig, RiskFilter
-from trading.tick_ingest.service.ingestor import CircuitBreaker
-from trading.storage.cache import CacherFactory, ValueCache, setup_cache
-from trading.tick_ingest.storage.store import AuditStore
-from trading.strategy.storage.store import ChartStore
-from trading.strategy.storage.store import ConfigStore
-from trading.execution.storage.store import PositionStore
-from trading.execution.storage.store import TradingStore
 
 logger = logging.getLogger(__name__)
 
@@ -143,7 +146,7 @@ class BacktestSession(TestingSession):
         """Build the direct pipeline: AlgoRegistry → RiskRegistry → ExecRegistry."""
         algo_instances: dict[str, AlgoInstance] = {
             s: AlgoInstance(
-                strategy=make_strategy(
+                strategy=create_strategy(
                     algo.strategy_id, config.strategy_params or None, clock=sim_clock
                 ),
                 instrument_type=InstrumentType.EQUITY,
@@ -153,13 +156,12 @@ class BacktestSession(TestingSession):
 
         polars_store = PolarsStore()
 
-        setup_cache(None)
         factory = CacherFactory(ValueCache(), sim_clock)
 
         audit = AuditStore(sf)
         trading = TradingStore(sf)
         position = PositionStore(sf)
-        accountant = PositionAccountant(position, factory)
+        accountant = PositionAccountant(position, trading, factory)
         fill_handler = FillHandler(trading, accountant)
 
         # SignalGenerator upserts algo_state keyed by algo.name via a
@@ -211,7 +213,6 @@ class BacktestSession(TestingSession):
             trading=trading,
             audit=audit,
             position=position,
-            factory=factory,
             clock=sim_clock,
             equity_provider=lambda: tracker.current_equity,
             circuit=CircuitBreaker(),
@@ -245,8 +246,9 @@ class BacktestSession(TestingSession):
             bars_done[0] = n
             sim_clock.advance(bar_ts)
 
-        from research.simulators.candle_player import CandlePlayer
         from trading.core.lifecycle.runtime import Runtime
+
+        from research.simulators.candle_player import CandlePlayer
 
         runtime = Runtime([])  # no components — pipeline is driven inline
 
@@ -397,9 +399,9 @@ class BacktestSession(TestingSession):
             # loop closes, surfacing as unhandled-exception noise (or, if the
             # loop wins the race first, a genuine lost write). Wait for them
             # here instead — filtered strictly by name, not "every task on the
-            # loop": long-lived tasks (e.g. cashews' cache-expiry sweeper,
-            # lazily started by setup_cache()) also live on the loop and never
-            # finish on their own, so gathering one of those hangs forever.
+            # loop": other long-lived service tasks can also live on the loop
+            # and never finish on their own, so gathering one of those hangs
+            # forever.
             pending = [
                 t
                 for t in asyncio.all_tasks()

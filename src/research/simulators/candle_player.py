@@ -6,11 +6,10 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 
 import polars as pl
-
-from trading.core.schemas import CandleEvent
+from trading.candles.service.bar_accumulator import SymbolConfig
 from trading.core.lifecycle.component import Component
 from trading.core.lifecycle.runtime import Runtime
-from trading.candles.service.bar_accumulator import SymbolConfig
+from trading.core.schemas import CandleEvent
 
 logger = logging.getLogger(__name__)
 
