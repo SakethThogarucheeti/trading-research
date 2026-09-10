@@ -38,10 +38,42 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from research.backtesting.data_loader import FileDataLoader
 from research.backtesting.engine import BacktestSession
 from research.backtesting.report import BacktestConfig
+from research.gridsearch import all_strategies as _gs_all_strategies
+from research.gridsearch import diagnose as _gs_diagnose
+from research.gridsearch import ema as _gs_ema
+from research.gridsearch import orb as _gs_orb
+from research.gridsearch import rsi as _gs_rsi
+from research.gridsearch import vwap as _gs_vwap
+from research.indicator_research import correlation as _ind_correlation
+from research.indicator_research import decay as _ind_decay
+from research.indicator_research import ic as _ind_ic
+from research.indicator_research import ic_daily as _ind_ic_daily
+from research.indicator_research import quintile as _ind_quintile
+from research.indicator_research import regime as _ind_regime
+from research.indicator_research import wf_ic as _ind_wf_ic
 from research.monte_carlo.report import MonteCarloConfig
 from research.monte_carlo.simulator import MonteCarloSimulator
 from research.walk_forward.report import WalkForwardConfig
 from research.walk_forward.runner import WalkForwardRunner
+
+# Subcommand name -> module exposing add_arguments(parser) / async run(args) -> None.
+# These commands print their own progress/results and don't produce a
+# results_dir/{session_id}/report.json session, unlike backtest/walk-forward/monte-carlo.
+_RUN_ONLY_COMMANDS = {
+    "indicator-correlation": _ind_correlation,
+    "indicator-decay": _ind_decay,
+    "indicator-ic": _ind_ic,
+    "indicator-ic-daily": _ind_ic_daily,
+    "indicator-quintile": _ind_quintile,
+    "indicator-regime": _ind_regime,
+    "indicator-wf-ic": _ind_wf_ic,
+    "hyperparam-search": _gs_ema,
+    "rsi-search": _gs_rsi,
+    "orb-search": _gs_orb,
+    "vwap-search": _gs_vwap,
+    "all-strategies": _gs_all_strategies,
+    "diagnose-signals": _gs_diagnose,
+}
 
 
 def _parse_date(s: str) -> datetime:
@@ -225,6 +257,71 @@ def main() -> None:
     p_mc.add_argument("--seed", type=int, default=42)
     p_mc.add_argument("--slippage-sigma", type=float, default=0.0)
 
+    p_ind_corr = sub.add_parser(
+        "indicator-correlation", help="Cross-indicator correlation matrix over historical signals"
+    )
+    _ind_correlation.add_arguments(p_ind_corr)
+
+    p_ind_decay = sub.add_parser(
+        "indicator-decay", help="Indicator predictive-power decay across forward horizons"
+    )
+    _ind_decay.add_arguments(p_ind_decay)
+
+    p_ind_ic = sub.add_parser(
+        "indicator-ic", help="Information Coefficient (Spearman IC) per indicator"
+    )
+    _ind_ic.add_arguments(p_ind_ic)
+
+    p_ind_ic_daily = sub.add_parser(
+        "indicator-ic-daily", help="Information Coefficient on daily-interval data"
+    )
+    _ind_ic_daily.add_arguments(p_ind_ic_daily)
+
+    p_ind_quintile = sub.add_parser(
+        "indicator-quintile", help="Quintile spread (top vs. bottom bucket forward return)"
+    )
+    _ind_quintile.add_arguments(p_ind_quintile)
+
+    p_ind_regime = sub.add_parser(
+        "indicator-regime", help="Indicator IC broken out by trending/ranging ADX regime"
+    )
+    _ind_regime.add_arguments(p_ind_regime)
+
+    p_ind_wf_ic = sub.add_parser(
+        "indicator-wf-ic", help="Walk-forward IC — indicator IC stability across rolling windows"
+    )
+    _ind_wf_ic.add_arguments(p_ind_wf_ic)
+
+    p_gs_ema = sub.add_parser(
+        "hyperparam-search", help="EMA crossover fast/slow/ATR hyperparameter grid search"
+    )
+    _gs_ema.add_arguments(p_gs_ema)
+
+    p_gs_rsi = sub.add_parser(
+        "rsi-search", help="RSI mean-reversion oversold/overbought/ATR grid search"
+    )
+    _gs_rsi.add_arguments(p_gs_rsi)
+
+    p_gs_orb = sub.add_parser(
+        "orb-search", help="Opening Range Breakout orb-bars/ATR grid search"
+    )
+    _gs_orb.add_arguments(p_gs_orb)
+
+    p_gs_vwap = sub.add_parser(
+        "vwap-search", help="VWAP reversion band/ATR grid search"
+    )
+    _gs_vwap.add_arguments(p_gs_vwap)
+
+    p_gs_all = sub.add_parser(
+        "all-strategies", help="Run every registered strategy once on real data (sanity sweep)"
+    )
+    _gs_all_strategies.add_arguments(p_gs_all)
+
+    p_gs_diag = sub.add_parser(
+        "diagnose-signals", help="Run one backtest and tally signal-rejection reasons from audit_logs"
+    )
+    _gs_diagnose.add_arguments(p_gs_diag)
+
     args = parser.parse_args()
 
     if args.command == "backtest":
@@ -233,6 +330,9 @@ def main() -> None:
         session_id = asyncio.run(_run_walk_forward(args))
     elif args.command == "monte-carlo":
         session_id = asyncio.run(_run_monte_carlo(args))
+    elif args.command in _RUN_ONLY_COMMANDS:
+        asyncio.run(_RUN_ONLY_COMMANDS[args.command].run(args))
+        return
     else:
         parser.error(f"Unknown command: {args.command}")
         return

@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 import polars as pl
-
 from trading.core.schemas import Side
 
 logger = logging.getLogger(__name__)

@@ -13,11 +13,11 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import polars as pl
+from trading.config.settings import AlgoSettings
+
 from research.backtesting.data_loader import DataLoader
 from research.backtesting.engine import BacktestSession
 from research.backtesting.report import BacktestConfig, BacktestReport
-
-from trading.config.settings import AlgoSettings
 
 _START = datetime(2024, 1, 2, 9, 15, 0, tzinfo=UTC)
 

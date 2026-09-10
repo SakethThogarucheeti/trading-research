@@ -1,0 +1,106 @@
+{
+  "_comment": "Strategy and feature-engine parameters. Loaded by AlgoSettings and the backtest engine.",
+
+  "strategy": {
+    "id": "ema_crossover",
+    "params": {
+      "fast": 12,
+      "slow": 26,
+      "atr_period": 14,
+      "atr_multiplier": 2.0
+    }
+  },
+
+  "feature_engine": {
+    "id": "technical",
+    "params": {
+      "ema_spans": [12, 26],
+      "atr_period": 14
+    }
+  },
+
+  "strategies": {
+    "ema_crossover": {
+      "params": { "fast": 12, "slow": 26, "atr_period": 14, "atr_multiplier": 2.0 },
+      "feature_engine_params": { "ema_spans": [12, 26], "atr_period": 14 }
+    },
+    "rsi_mean_reversion": {
+      "_comment": "Best grid-search params: oversold=35, overbought=70, atr_mult=1.0 → Sharpe=8.57, CAGR=117%",
+      "params": { "rsi_period": 14, "oversold": 35, "overbought": 70, "atr_period": 14, "atr_multiplier": 1.0 },
+      "feature_engine_params": { "ema_spans": [9, 21], "atr_period": 14 }
+    },
+    "vwap_reversion": {
+      "_comment": "Best grid-search params: vwap_band=1.0, atr_mult=1.0 → Sharpe=9.28",
+      "params": { "vwap_band": 1.0, "atr_period": 14, "atr_multiplier": 1.0 },
+      "feature_engine_params": { "ema_spans": [9, 21], "atr_period": 14 }
+    },
+    "opening_range_breakout": {
+      "params": { "orb_bars": 4, "atr_period": 14, "atr_multiplier": 1.5, "interval_minutes": 15 },
+      "feature_engine_params": { "ema_spans": [9, 21], "atr_period": 14 }
+    },
+    "linreg_trend": {
+      "_comment": "Mean ICIR=21.0 (top-ranked indicator). Trend-following on slope zero-cross.",
+      "params": { "period": 20, "entry_threshold": 0.0, "atr_period": 14, "atr_multiplier": 1.5 },
+      "feature_engine_params": { "ema_spans": [9, 21], "atr_period": 14 }
+    },
+    "dpo_mean_reversion": {
+      "_comment": "Mean ICIR=20.18 (second-ranked). Mean-revert on DPO cycle extremes.",
+      "params": { "period": 20, "dpo_threshold": 0.0, "atr_period": 14, "atr_multiplier": 1.5 },
+      "feature_engine_params": { "ema_spans": [9, 21], "atr_period": 14 }
+    },
+    "squeeze_breakout": {
+      "_comment": "Mean ICIR=8.78 (third-ranked). Enter on momentum zero-cross after Bollinger/Keltner squeeze.",
+      "params": { "period": 20, "bb_k": 2.0, "kc_k": 1.5, "squeeze_lookback": 5, "atr_period": 14, "atr_multiplier": 1.5 },
+      "feature_engine_params": { "ema_spans": [9, 21], "atr_period": 14 }
+    }
+  },
+
+  "hyperparam_search": {
+    "_comment": "Active strategy for the grid search. Switch strategy_id to run a different strategy.",
+    "strategy_id": "ema_crossover",
+
+    "symbols": ["INFY", "TCS", "RELIANCE", "HDFCBANK", "ICICIBANK"],
+    "interval": "15min",
+    "equity": 10000.0,
+    "months": 1,
+    "end_date": "2026-04-17",
+
+    "grids": {
+      "ema_crossover": {
+        "fast_periods": [5, 9, 12],
+        "slow_periods": [13, 21, 26],
+        "atr_multipliers": [1.0, 1.5, 2.0]
+      },
+      "rsi_mean_reversion": {
+        "oversold_levels": [25, 30, 35],
+        "overbought_levels": [65, 70, 75],
+        "atr_multipliers": [1.0, 1.5, 2.0]
+      },
+      "vwap_reversion": {
+        "vwap_bands": [0.5, 1.0, 1.5, 2.0],
+        "atr_multipliers": [0.5, 1.0, 1.5]
+      },
+      "opening_range_breakout": {
+        "orb_bars": [2, 4, 8],
+        "atr_multipliers": [1.0, 1.5, 2.0]
+      },
+      "linreg_trend": {
+        "periods": [10, 20, 30],
+        "entry_thresholds": [0.0, 0.05, 0.1],
+        "atr_multipliers": [1.0, 1.5, 2.0]
+      },
+      "dpo_mean_reversion": {
+        "periods": [14, 20, 28],
+        "dpo_thresholds": [0.0],
+        "atr_multipliers": [1.0, 1.5, 2.0]
+      },
+      "squeeze_breakout": {
+        "periods": [14, 20],
+        "bb_ks": [1.5, 2.0, 2.5],
+        "kc_ks": [1.0, 1.5, 2.0],
+        "squeeze_lookbacks": [3, 5, 8],
+        "atr_multipliers": [1.0, 1.5, 2.0]
+      }
+    }
+  }
+}

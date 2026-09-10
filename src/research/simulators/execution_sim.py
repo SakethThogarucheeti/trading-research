@@ -8,7 +8,6 @@ from datetime import datetime
 from uuid import uuid4
 
 import polars as pl
-
 from trading.broker.service.broker import Broker
 from trading.broker.service.paper_broker import AbstractPriceStore
 from trading.core.schemas import OrderType, Side
