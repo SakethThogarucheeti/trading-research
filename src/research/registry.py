@@ -36,12 +36,10 @@ def session_type(name: str):
             ...
 
     The ``name`` must match the ``type`` literal on the paired
-    ``SessionConfig`` subclass so YAML / JSON deserialisation can resolve
-    the right config class via ``config_types()``.
+    ``SessionConfig`` subclass.
 
-    Adding a new session type requires only this decorator — the CLI and
-    the dashboard's report registry both dispatch by ``session_type``
-    string, with no hardcoded type list to update.
+    Adding a new test type requires only this decorator — no registry
+    changes needed elsewhere.
     """
 
     def decorator(cls: type[TestingSession]) -> type[TestingSession]:
@@ -52,31 +50,6 @@ def session_type(name: str):
         return cls
 
     return decorator
-
-
-def build_session(config: SessionConfig, **kwargs: object) -> TestingSession:
-    """
-    Instantiate the right ``TestingSession`` for *config*.
-
-    Dispatches via the global registry — no ``isinstance`` checks required.
-    Extra keyword arguments (``db_engine``, ``redis``, ``bus``, etc.) are
-    forwarded to the session constructor.
-
-    Raises ``KeyError`` if ``config.type`` has not been registered.
-    """
-    entry = _REGISTRY[config.type]
-    return entry.session_cls(config=config, **kwargs)  # type: ignore[call-arg]
-
-
-def config_types() -> list[type[SessionConfig]]:
-    """
-    Return all registered config classes.
-
-    Useful for building a discriminated union at parse time (YAML/JSON
-    config loading) — new session types appear automatically here with
-    no changes needed elsewhere.
-    """
-    return [e.config_cls for e in _REGISTRY.values()]
 
 
 def registered_names() -> list[str]:
