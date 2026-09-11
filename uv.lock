@@ -1217,7 +1217,7 @@ wheels = [
 [[package]]
 name = "trading-platform"
 version = "0.1.0"
-source = { git = "https://github.com/SakethThogarucheeti/trading-platform.git?tag=v0.1.1#c52b05e3165add4d02ed058c409b6ea5538e6ff6" }
+source = { git = "https://github.com/SakethThogarucheeti/trading-platform.git?tag=v0.1.2#93cb03f64b80f08786b9b80c9687d547a9c7ebef" }
 dependencies = [
     { name = "alembic" },
     { name = "anyio" },
@@ -1278,7 +1278,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.0" },
     { name = "quantindicators", git = "https://github.com/SakethThogarucheeti/quantindicators.git?tag=v0.1.1" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0" },
-    { name = "trading-platform", git = "https://github.com/SakethThogarucheeti/trading-platform.git?tag=v0.1.1" },
+    { name = "trading-platform", git = "https://github.com/SakethThogarucheeti/trading-platform.git?tag=v0.1.2" },
     { name = "trading-risk-sdk", git = "https://github.com/SakethThogarucheeti/trading-risk-sdk.git?tag=v0.1.2" },
     { name = "trading-strategy-sdk", git = "https://github.com/SakethThogarucheeti/trading-strategy-sdk.git?tag=v0.1.5" },
     { name = "trading-types", git = "https://github.com/SakethThogarucheeti/trading-types.git?tag=v0.1.1" },
