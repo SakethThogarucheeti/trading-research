@@ -98,6 +98,10 @@ class WalkForwardRunner(TestingSession):
                 config=bt_config,
                 db_engine=self._db_engine,
                 results_dir=self._results_dir,
+                # One isolated schema for the whole run (not "public") — every
+                # window still gets a fresh table set since _make_schema_engine
+                # drops/recreates any non-"public" schema on each call.
+                db_schema=f"wf_{session_id}",
             )
             bt_report = await bt_session.run()
             backtest_reports.append(bt_report)

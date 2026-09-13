@@ -79,7 +79,12 @@ async def run(args: argparse.Namespace) -> None:
                 initial_equity=args.equity,
                 slippage_pct=args.slippage,
             )
-            session = BacktestSession(config=config, db_engine=db_engine, results_dir=out_dir)
+            session = BacktestSession(
+                config=config,
+                db_engine=db_engine,
+                results_dir=out_dir,
+                db_schema=f"bt_real_{strategy_id}",
+            )
             report = await session.run()
 
             if report is None:

@@ -30,6 +30,7 @@ import argparse
 import asyncio
 import json
 import platform
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -153,11 +154,15 @@ async def _run_backtest(args: argparse.Namespace) -> str:
     )
     db_engine = _make_db_engine(args.db_url, args.db_no_ssl)
     connect_args = {"ssl": False} if args.db_no_ssl else {}
+    # A real, isolated scratch schema per invocation — never "public" — so a
+    # manual CLI backtest run can't wipe a real database's default schema.
+    db_schema = f"bt_{args.session_id or uuid.uuid4().hex[:8]}"
     try:
         session = BacktestSession(
             config=config,
             db_engine=db_engine,
             results_dir=args.results_dir,
+            db_schema=db_schema,
             connect_args=connect_args,
         )
         report = await session.run()

@@ -60,7 +60,7 @@ def _algo(name: str = "smoke") -> AlgoSettings:
     )
 
 
-async def test_backtest_session_runs_end_to_end(pg_engine, tmp_path):
+async def test_backtest_session_runs_end_to_end(pg_engine, db_schema, tmp_path):
     """BacktestSession.run() completes and returns a well-formed report."""
     df = _synthetic_ohlcv(n_bars=250)
     config = BacktestConfig(
@@ -70,7 +70,9 @@ async def test_backtest_session_runs_end_to_end(pg_engine, tmp_path):
         loader=_InMemoryLoader(df),
         initial_equity=100_000.0,
     )
-    session = BacktestSession(config=config, db_engine=pg_engine, results_dir=tmp_path)
+    session = BacktestSession(
+        config=config, db_engine=pg_engine, results_dir=tmp_path, db_schema=db_schema
+    )
     report = await session.run()
 
     assert isinstance(report, BacktestReport)
@@ -79,7 +81,7 @@ async def test_backtest_session_runs_end_to_end(pg_engine, tmp_path):
     assert len(report.equity_curve) > 0
 
 
-async def test_backtest_session_html_report_generated(pg_engine, tmp_path):
+async def test_backtest_session_html_report_generated(pg_engine, db_schema, tmp_path):
     """to_html() must return non-empty Plotly-embedded HTML for a completed run."""
     df = _synthetic_ohlcv(n_bars=250)
     config = BacktestConfig(
@@ -89,7 +91,9 @@ async def test_backtest_session_html_report_generated(pg_engine, tmp_path):
         loader=_InMemoryLoader(df),
         initial_equity=100_000.0,
     )
-    session = BacktestSession(config=config, db_engine=pg_engine, results_dir=tmp_path)
+    session = BacktestSession(
+        config=config, db_engine=pg_engine, results_dir=tmp_path, db_schema=db_schema
+    )
     report = await session.run()
 
     html = report.to_html()
