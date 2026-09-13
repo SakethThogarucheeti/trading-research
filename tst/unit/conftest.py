@@ -9,10 +9,18 @@ trading-integ-tests/strategy/conftest.py.
 
 from __future__ import annotations
 
+import uuid
+
 import pytest
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from trading.app.database import init_db
+
+
+@pytest.fixture
+def db_schema() -> str:
+    """A unique, isolated scratch schema per test — never ``"public"``."""
+    return f"test_{uuid.uuid4().hex[:8]}"
 
 
 @pytest.fixture(scope="session")

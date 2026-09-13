@@ -74,7 +74,7 @@ class BacktestSession(TestingSession):
         config: BacktestConfig,
         db_engine: AsyncEngine,
         results_dir: Path,
-        db_schema: str = "public",
+        db_schema: str,
         keep_schema: bool = False,
         connect_args: dict[str, object] | None = None,
     ) -> None:
@@ -463,11 +463,17 @@ async def _make_schema_engine(
     ``base_engine`` directly, so any non-default connect_args on the caller's
     original engine (e.g. ``ssl=False`` for a flaky local container) must be
     passed in via *extra_connect_args* — they are not inherited automatically.
+
+    ``schema == "public"`` is never dropped/recreated here, mirroring the
+    guard ``_drop_schema`` already has — a caller that explicitly opts into
+    "public" (rather than a real isolated scratch schema) gets an engine
+    pointed at it as-is, not a wiped one.
     """
-    async with _schema_create_lock:
-        async with base_engine.begin() as conn:
-            await conn.execute(text(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
-            await conn.execute(text(f'CREATE SCHEMA "{schema}"'))
+    if schema != "public":
+        async with _schema_create_lock:
+            async with base_engine.begin() as conn:
+                await conn.execute(text(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
+                await conn.execute(text(f'CREATE SCHEMA "{schema}"'))
 
     return create_async_engine(
         base_engine.url,
