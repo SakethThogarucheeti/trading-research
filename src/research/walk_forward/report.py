@@ -28,8 +28,8 @@ class WalkForwardConfig(SessionConfig):
     type: Literal["walk_forward"] = field(default="walk_forward", init=False)
 
     # Required — no default; callers must supply these
-    algo: AlgoSettings = field(default=None)  # type: ignore[assignment]
-    loader: DataLoader = field(default=None)  # type: ignore[assignment]
+    algo: AlgoSettings
+    loader: DataLoader
     symbols: list[str] = field(default_factory=list)
     intervals: list[str] = field(default_factory=lambda: ["1min"])
 
